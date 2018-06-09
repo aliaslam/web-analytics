@@ -3,31 +3,12 @@ package controllers
 import (
 	"log"
 	"net/http"
-	"strconv"
-	"time"
+	"strings"
 
 	. "github.com/aliaslam/webanalytics/utils"
 	"github.com/gomodule/redigo/redis"
 	"github.com/unrolled/render"
 )
-
-/*
-Sample GET requests and JSON responses:
-http://localhost:8080/pageviews?guid=862e0c3a-6c58-4160-9196-f0050faf00ef&path=/checkout.html&ref=instagram.com&s=1525132800&e=1527724800
-{"Views":13,"StartTime":"1525132800","EndTime":"1527724800","Path":"/checkout.html","Ref":"instagram.com"}
-
-http://localhost:8080/pageviews?guid=862e0c3a-6c58-4160-9196-f0050faf00ef&ref=google.com&s=1525132800&e=1527724800
-{"Views":93,"StartTime":"1525132800","EndTime":"1527724800","Path":"ALL","Ref":"google.com"}
-
-http://localhost:8080/pageviews?guid=862e0c3a-6c58-4160-9196-f0050faf00ef&path=/index.html&s=1525132800&e=1527724800
-{"Views":55,"StartTime":"1525132800","EndTime":"1527724800","Path":"/index.html","Ref":"ALL"}
-
-http://localhost:8080/pageviews?guid=862e0c3a-6c58-4160-9196-f0050faf00ef&s=1527379200&e=1527465599
-{"Views":200,"StartTime":"1527379200","EndTime":"1527465599","Path":"ALL","Ref":"ALL"}
-
-http://localhost:8080/uniques?t=1527490930
-{"Daily":5,"Monthly":5,"Yearly":5,"Time":"2018:05:28"}
-*/
 
 type pageviews struct {
 	Views     int64
@@ -44,71 +25,63 @@ type uniques struct {
 	Time    string
 }
 
-var clientid = "28795421456" //This would be fetched from the DB or the client's session
+var clientid = "287954214567" //This would be fetched from the DB or the client's session
 var pv *pageviews
 var r = render.New()
 
 //Returns the Daily, Monthly, and Yearly Unique hits
-func GetUnique(writer http.ResponseWriter, request *http.Request) {
+func GetUniques(writer http.ResponseWriter, request *http.Request) {
 
 	if request.Method == "GET" {
-		t := request.URL.Query().Get("t")
+		d := request.URL.Query().Get("d")
 
-		parsedUT, err := strconv.ParseInt(t, 10, 64)
-		if err != nil {
-			log.Println(err)
+		dateComponents := strings.Split(d, "/")
+		if len(dateComponents) <= 1 {
+			r.Text(writer, http.StatusOK, "Error: Please pass in a correctly formatted date: YYYY/MM/DD")
+		} else {
+			dailyUniques, err := RC.Do("PFCOUNT", clientid+KS+"uniques"+KS+dateComponents[0]+KS+dateComponents[1]+KS+dateComponents[2]) //PFCOUNT on the hyperloglog object for daily uniques
+			if err != nil {
+				log.Println(err)
+			}
+			monthlyUniques := queryUniques(dateComponents[0]+KS+dateComponents[1], "monthlyuniques")
+			yearlyUniques := queryUniques(dateComponents[0], "yearlyuniques")
+
+			uniques := uniques{
+				Daily:   dailyUniques.(int64),
+				Monthly: monthlyUniques.(int64),
+				Yearly:  yearlyUniques.(int64),
+				Time:    d,
+			}
+			r.JSON(writer, http.StatusOK, uniques)
 		}
-		tm := time.Unix(parsedUT, 0)
-		date := tm.Format("2006:01:02")
-
-		dailyUniques, err := RC.Do("PFCOUNT", clientid+KS+"uniques"+KS+date) //PFCOUNT on the hyperloglog object for daily uniques
-		if err != nil {
-			log.Println(err)
-		}
-
-		monthlyUniques := queryUniques("month", tm)
-		yearlyUniques := queryUniques("year", tm)
-
-		uniques := uniques{
-			Daily:   dailyUniques.(int64),
-			Monthly: monthlyUniques.(int64),
-			Yearly:  yearlyUniques.(int64),
-			Time:    date,
-		}
-		r.JSON(writer, http.StatusOK, uniques)
 
 	}
 }
 
 //Helper function to get the Monthly, and Yearly Unique hits
-func queryUniques(interval string, tm time.Time) interface{} {
+func queryUniques(keypattern string, resultkey string) interface{} {
 
-	var timeformat, key string
-
-	switch interval {
-	case "month":
-		timeformat = "2006:01"
-		key = "monthlyuniques"
-	case "year":
-		timeformat = "2006"
-		key = "yearlyuniques"
+	//Clear out any old results
+	_, err := RC.Do("DEL", clientid+KS+resultkey)
+	if err != nil {
+		log.Println(err)
 	}
-	//Depending on monthly or yearly query, we first PFMERGE all the HLL keys, then do a PFCOUNT to get the uniques
-	matchingKeys := getMatchingKeys(clientid + KS + "uniques" + KS + tm.Format(timeformat) + KS + "*")
 
-	combniedKeys := append([]string{clientid + KS + key}, matchingKeys...)
+	//Depending on monthly or yearly query, we first PFMERGE all the matching HLL keys, then do a PFCOUNT to get the uniques
+	matchingKeys := getMatchingKeys(clientid + KS + "uniques" + KS + keypattern + KS + "*")
+
+	combniedKeys := append([]string{clientid + KS + resultkey}, matchingKeys...)
 
 	s := make([]interface{}, len(combniedKeys))
 	for index, value := range combniedKeys {
 		s[index] = value
 	}
 
-	_, err := RC.Do("PFMERGE", s...)
+	_, err = RC.Do("PFMERGE", s...)
 	if err != nil {
 		log.Println(err)
 	}
-
-	uniques, err := RC.Do("PFCOUNT", clientid+KS+key)
+	uniques, err := RC.Do("PFCOUNT", clientid+KS+resultkey)
 	if err != nil {
 		log.Println(err)
 	}
@@ -123,13 +96,23 @@ func getMatchingKeys(pattern string) []string {
 	keys := []string{}
 	for {
 
-		if arr, err := redis.Values(RC.Do("SCAN", 0, "MATCH", pattern, "COUNT", 365)); err != nil {
-			panic(err)
+		arr, err := redis.Values(RC.Do("SCAN", 0, "MATCH", pattern, "COUNT", 365))
+		if err != nil {
+			log.Println(err)
 		} else {
+			iter, err = redis.Int(arr[0], nil)
+			if err != nil {
+				log.Println(err)
+			}
 
-			iter, _ = redis.Int(arr[0], nil)
-			keys, _ = redis.Strings(arr[1], nil)
+			k, err := redis.Strings(arr[1], nil)
+			if err != nil {
+				log.Println(err)
+			}
+
+			keys = append(keys, k...)
 		}
+
 		if iter == 0 {
 			break
 		}
@@ -138,7 +121,7 @@ func getMatchingKeys(pattern string) []string {
 }
 
 // GetPageview responds to a GET request with page view info
-func GetPageview(writer http.ResponseWriter, request *http.Request) {
+func GetPageviews(writer http.ResponseWriter, request *http.Request) {
 
 	if request.Method == "GET" {
 

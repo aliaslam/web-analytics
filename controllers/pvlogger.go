@@ -40,8 +40,8 @@ func SetPageview(writer http.ResponseWriter, request *http.Request) {
 		pageviewHashKey := clientid + KS + eventType + KS + fmt.Sprintf("%v", pageViewIndex)
 		pageviewByPathKey := clientid + KS + "path" + KS + path
 		pageviewByRefKey := clientid + KS + "ref" + KS + ref
-		uniquesKey := clientid + KS + "uniques" + KS + t.Format("2006:01:02")
 		timeIndexKey := clientid + KS + "timeindex"
+		uniquesKey := clientid + KS + "uniques" + KS + t.Format("2006:01:02")
 
 		//Create/Update the hash, sorted sets, and hyperloglog for uniques in a transaction
 		RC.Send("MULTI")
