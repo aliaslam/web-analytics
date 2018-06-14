@@ -39,6 +39,7 @@ A detailed [screen cast](https://www.youtube.com/watch?v=53Hzt7b2fqc) of getting
 ## How to run the App
 * Install Go
 * Install Redis and have it running locally at the default port 6379
+* Install [redis-commander](https://github.com/joeferner/redis-commander) using npm
 * cd into the project directory and run: ``go run main.go``
 * Start making POST & GET requests
 
