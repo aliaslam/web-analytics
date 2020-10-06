@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -51,6 +50,8 @@ type Delims struct {
 type Options struct {
 	// Directory to load templates. Default is "templates".
 	Directory string
+	// FileSystem to access files
+	FileSystem FileSystem
 	// Asset function to use in place of directory. Defaults to nil.
 	Asset func(name string) ([]byte, error)
 	// AssetNames function to use in place of directory. Defaults to nil.
@@ -59,7 +60,7 @@ type Options struct {
 	Layout string
 	// Extensions to parse template files from. Defaults to [".tmpl"].
 	Extensions []string
-	// Funcs is a slice of FuncMaps to apply to the template upon compilation. This is useful for helper functions. Defaults to [].
+	// Funcs is a slice of FuncMaps to apply to the template upon compilation. This is useful for helper functions. Defaults to empty map.
 	Funcs []template.FuncMap
 	// Delims sets the action delimiters to the specified strings in the Delims struct.
 	Delims Delims
@@ -108,6 +109,8 @@ type Options struct {
 type HTMLOptions struct {
 	// Layout template name. Overrides Options.Layout.
 	Layout string
+	// Funcs added to Options.Funcs.
+	Funcs template.FuncMap
 }
 
 // Render is a service that provides functions for easily writing JSON, XML,
@@ -123,9 +126,7 @@ type Render struct {
 // New constructs a new Render instance with the supplied options.
 func New(options ...Options) *Render {
 	var o Options
-	if len(options) == 0 {
-		o = Options{}
-	} else {
+	if len(options) > 0 {
 		o = options[0]
 	}
 
@@ -150,6 +151,9 @@ func (r *Render) prepareOptions() {
 
 	if len(r.opt.Directory) == 0 {
 		r.opt.Directory = "templates"
+	}
+	if r.opt.FileSystem == nil {
+		r.opt.FileSystem = &LocalFileSystem{}
 	}
 	if len(r.opt.Extensions) == 0 {
 		r.opt.Extensions = []string{".tmpl"}
@@ -188,7 +192,7 @@ func (r *Render) compileTemplatesFromDir() {
 	r.templates.Delims(r.opt.Delims.Left, r.opt.Delims.Right)
 
 	// Walk the supplied directory and compile any files that match our extension list.
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	r.opt.FileSystem.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		// Fix same-extension-dirs bug: some dir might be named to: "users.tmpl", "local.html".
 		// These dirs should be excluded as they are not valid golang templates, but files under
 		// them should be treat as normal.
@@ -209,7 +213,7 @@ func (r *Render) compileTemplatesFromDir() {
 
 		for _, extension := range r.opt.Extensions {
 			if ext == extension {
-				buf, err := ioutil.ReadFile(path)
+				buf, err := r.opt.FileSystem.ReadFile(path)
 				if err != nil {
 					panic(err)
 				}
@@ -287,8 +291,8 @@ func (r *Render) execute(name string, binding interface{}) (*bytes.Buffer, error
 	return buf, r.templates.ExecuteTemplate(buf, name, binding)
 }
 
-func (r *Render) addLayoutFuncs(name string, binding interface{}) {
-	funcs := template.FuncMap{
+func (r *Render) layoutFuncs(name string, binding interface{}) template.FuncMap {
+	return template.FuncMap{
 		"yield": func() (template.HTML, error) {
 			buf, err := r.execute(name, binding)
 			// Return safe HTML here since we are rendering our own template.
@@ -323,18 +327,32 @@ func (r *Render) addLayoutFuncs(name string, binding interface{}) {
 			return "", nil
 		},
 	}
-	if tpl := r.templates.Lookup(name); tpl != nil {
-		tpl.Funcs(funcs)
-	}
 }
 
 func (r *Render) prepareHTMLOptions(htmlOpt []HTMLOptions) HTMLOptions {
+	layout := r.opt.Layout
+	funcs := template.FuncMap{}
+
+	for _, tmp := range r.opt.Funcs {
+		for k, v := range tmp {
+			funcs[k] = v
+		}
+	}
+
 	if len(htmlOpt) > 0 {
-		return htmlOpt[0]
+		opt := htmlOpt[0]
+		if len(opt.Layout) > 0 {
+			layout = opt.Layout
+		}
+
+		for k, v := range opt.Funcs {
+			funcs[k] = v
+		}
 	}
 
 	return HTMLOptions{
-		Layout: r.opt.Layout,
+		Layout: layout,
+		Funcs:  funcs,
 	}
 }
 
@@ -372,10 +390,15 @@ func (r *Render) HTML(w io.Writer, status int, name string, binding interface{},
 	}
 
 	opt := r.prepareHTMLOptions(htmlOpt)
-	// Assign a layout if there is one.
-	if len(opt.Layout) > 0 {
-		r.addLayoutFuncs(name, binding)
-		name = opt.Layout
+	if tpl := r.templates.Lookup(name); tpl != nil {
+		if len(opt.Layout) > 0 {
+			tpl.Funcs(r.layoutFuncs(name, binding))
+			name = opt.Layout
+		}
+
+		if len(opt.Funcs) > 0 {
+			tpl.Funcs(opt.Funcs)
+		}
 	}
 
 	head := Head{

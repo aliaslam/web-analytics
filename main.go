@@ -4,9 +4,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/aliaslam/webanalytics/controllers"
-	"github.com/aliaslam/webanalytics/utils"
 	"github.com/gorilla/mux"
+	"github.com/nathanusask/web-analytics/controllers"
+	"github.com/nathanusask/web-analytics/utils"
 )
 
 //main() func that sets up the redis connection, sets up the REST API routes, and starts the HTTP server

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	. "github.com/aliaslam/webanalytics/utils"
+	. "github.com/nathanusask/web-analytics/utils"
 )
 
 /*
