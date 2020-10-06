@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	. "github.com/aliaslam/webanalytics/utils"
 	"github.com/gomodule/redigo/redis"
+	. "github.com/nathanusask/web-analytics/utils"
 	"github.com/unrolled/render"
 )
 
